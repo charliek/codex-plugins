@@ -1,0 +1,28 @@
+{
+  "name": "cursor",
+  "version": "0.1.0",
+  "description": "Delegate tasks and code reviews to the Cursor agent CLI from Codex.",
+  "author": {
+    "name": "charliek",
+    "email": "charlie.knudsen@gmail.com",
+    "url": "https://github.com/charliek"
+  },
+  "homepage": "https://github.com/charliek/codex-plugins/tree/main/plugins/cursor",
+  "repository": "https://github.com/charliek/codex-plugins",
+  "license": "MIT",
+  "keywords": ["cursor", "delegation", "code-review", "agent"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Cursor",
+    "shortDescription": "Delegate tasks and reviews to Cursor",
+    "longDescription": "Run write-capable Cursor rescue tasks, read-only code reviews, adversarial design reviews, and CLI readiness checks from Codex.",
+    "developerName": "charliek",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/charliek/codex-plugins",
+    "defaultPrompt": [
+      "Ask Cursor to investigate this task.",
+      "Review my current changes with Cursor."
+    ]
+  }
+}

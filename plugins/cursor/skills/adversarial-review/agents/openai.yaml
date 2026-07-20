@@ -1,0 +1,6 @@
+interface:
+  display_name: "Cursor Adversarial Review"
+  short_description: "Challenge implementation design with Cursor"
+  default_prompt: "Use $adversarial-review to challenge this implementation."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ask GLM"
+  short_description: "Review an implementation plan with GLM"
+  default_prompt: "Use $ask-glm to get a GLM review of this plan."
+policy:
+  allow_implicit_invocation: false

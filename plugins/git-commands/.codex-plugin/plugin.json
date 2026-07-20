@@ -1,0 +1,28 @@
+{
+  "name": "git-commands",
+  "version": "0.1.0",
+  "description": "GitHub pull-request monitoring, repair, and merge workflows for Codex.",
+  "author": {
+    "name": "charliek",
+    "email": "charlie.knudsen@gmail.com",
+    "url": "https://github.com/charliek"
+  },
+  "homepage": "https://github.com/charliek/codex-plugins/tree/main/plugins/git-commands",
+  "repository": "https://github.com/charliek/codex-plugins",
+  "license": "MIT",
+  "keywords": ["git", "github", "pull-request", "ci"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Git Commands",
+    "shortDescription": "Watch, repair, and merge GitHub pull requests",
+    "longDescription": "Monitor pull-request checks and bot feedback, repair CI failures, and safely merge completed work with appropriate history cleanup.",
+    "developerName": "charliek",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/charliek/codex-plugins",
+    "defaultPrompt": [
+      "Watch this pull request until it is ready.",
+      "Verify and merge the pull request for this branch."
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Watch Pull Request"
+  short_description: "Monitor and repair pull request checks"
+  default_prompt: "Use $watch-pr to monitor this pull request until it is ready."
+policy:
+  allow_implicit_invocation: false

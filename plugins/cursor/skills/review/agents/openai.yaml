@@ -1,0 +1,6 @@
+interface:
+  display_name: "Cursor Review"
+  short_description: "Review local changes with Cursor"
+  default_prompt: "Use $review to review my current changes."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ask Review Panel"
+  short_description: "Review a plan with three independent passes"
+  default_prompt: "Use $ask-panel to run the full review panel on this plan."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Merge Pull Request"
+  short_description: "Verify and merge a pull request safely"
+  default_prompt: "Use $merge-pr to verify and merge this pull request."
+policy:
+  allow_implicit_invocation: false

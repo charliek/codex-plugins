@@ -1,0 +1,6 @@
+interface:
+  display_name: "Cursor Rescue"
+  short_description: "Delegate a substantial task to Cursor"
+  default_prompt: "Use $rescue to investigate and solve this task."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,28 @@
+{
+  "name": "planning",
+  "version": "0.1.0",
+  "description": "Native and external implementation-plan review workflows for Codex.",
+  "author": {
+    "name": "charliek",
+    "email": "charlie.knudsen@gmail.com",
+    "url": "https://github.com/charliek"
+  },
+  "homepage": "https://github.com/charliek/codex-plugins/tree/main/plugins/planning",
+  "repository": "https://github.com/charliek/codex-plugins",
+  "license": "MIT",
+  "keywords": ["planning", "review", "glm", "coderabbit"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Planning",
+    "shortDescription": "Review plans with Codex, GLM, and CodeRabbit",
+    "longDescription": "Review implementation plans natively or with GLM and the CodeRabbit engine, then synthesize and incorporate actionable feedback.",
+    "developerName": "charliek",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/charliek/codex-plugins",
+    "defaultPrompt": [
+      "Review this implementation plan.",
+      "Run the full review panel on this plan."
+    ]
+  }
+}
