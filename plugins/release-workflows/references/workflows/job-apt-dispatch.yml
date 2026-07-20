@@ -1,0 +1,87 @@
+# apt-dispatch: fire a repository_dispatch at an apt-repo receiver so it
+# picks up the newly-published .debs and republishes its package index.
+#
+# The receiver repo is another repo you (or someone else) maintains; it
+# listens for a `repository_dispatch` event of a specific type and
+# republishes apt metadata. This job's job is just to notify.
+#
+# Credentials: this template uses the release-bot App (not a PAT). The
+# `POST /repos/.../dispatches` endpoint needs Contents:write on the receiver,
+# which the App's installation token has. It mints a token scoped to the receiver
+# via actions/create-github-app-token (owner + repositories). The App must be
+# installed on the receiver repo. See ../github-app.md, "Cross-repo bot pushes".
+#
+# Legacy alternative: a fine-grained `APT_DISPATCH_TOKEN` PAT with Contents:write
+# on the receiver. To use it, drop the "Mint" step and set
+# `GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}` on the dispatch step (and gate on
+# `secrets.APT_DISPATCH_TOKEN != ''` instead of RELEASE_BOT_CLIENT_ID). prox/roost
+# still use this form pending migration to the App.
+#
+# === Paste-ready fragment ===
+# This file's YAML is already indented by 2 spaces so it sits cleanly
+# under `jobs:` in release.yml. Copy from the first non-comment line to
+# the end of the file and paste under your `jobs:` block. Do not
+# re-indent.
+#
+# Substitution placeholders:
+#   <BUILD_JOB>              — the job id that built and uploaded the .debs
+#   <APT_RECEIVER_REPO>      — `<owner>/<repo>` of the receiver
+#   <APT_RECEIVER_NAME>      — the receiver's repo name only (for the token scope)
+#   <APT_EVENT_TYPE>         — the event_type the receiver listens for, e.g. `publish`
+#   <APT_PACKAGE>            — your package's name as the receiver knows it
+#
+# If RELEASE_BOT_CLIENT_ID isn't set, or the tag is a prerelease, this job downgrades
+# to a notice rather than failing the release. The receiver should self-heal on
+# its next scheduled re-scan if it's set up that way.
+
+  apt-dispatch:
+    needs: <BUILD_JOB>      # the job that built and uploaded the .debs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide whether to dispatch
+        id: guard
+        env:
+          CLIENT_ID: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          case "${tag}" in
+            *-*)
+              echo "::notice::${tag} is a prerelease — skipping <APT_RECEIVER_REPO> dispatch."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          if [ -z "${CLIENT_ID}" ]; then
+            echo "::warning::RELEASE_BOT_CLIENT_ID not set — skipping dispatch. <APT_RECEIVER_REPO> can self-heal on its next scheduled re-scan."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a <APT_RECEIVER_REPO> token
+        if: steps.guard.outputs.skip == 'false'
+        id: apt
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: <APT_RECEIVER_NAME>
+          # Defense-in-depth: POST /repos/.../dispatches needs contents:write;
+          # pinning the floor avoids silent widening if the App's install
+          # perms are ever expanded.
+          permission-contents: write
+
+      - name: Dispatch <APT_RECEIVER_REPO> publish
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.apt.outputs.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh api "repos/<APT_RECEIVER_REPO>/dispatches" --method POST \
+            -f event_type=<APT_EVENT_TYPE> \
+            -F "client_payload[package]=<APT_PACKAGE>" \
+            -F "client_payload[tag]=${tag}"
+          echo "::notice::Dispatched <APT_RECEIVER_REPO> publish for <APT_PACKAGE> ${tag}."

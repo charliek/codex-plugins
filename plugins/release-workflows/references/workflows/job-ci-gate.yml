@@ -1,0 +1,60 @@
+# ci-gate: refuse to publish a release whose code didn't pass CI.
+#
+# The tagged commit was pushed to main by the release skill moments
+# before this workflow fired; its own ci.yml run is in flight in
+# parallel. This job polls until that run's `ci-success` check is
+# completed, and refuses to release unless it concluded `success`.
+#
+# Why polling vs `workflow_run` chaining: workflow_run has UI quirks
+# (the "released" tag doesn't show up under the release workflow on the
+# tag page) and races with re-runs. Polling is simpler and matches
+# what a maintainer would do manually.
+#
+# `ci-success` is the conventional single required check (set by ci.yml).
+# If your repo uses a different gate-check name, replace `ci-success`
+# in the URL parameter and the prose below.
+#
+# === Paste-ready fragment ===
+# This file's YAML is already indented by 2 spaces so it sits cleanly
+# under `jobs:` in release.yml. Copy from the first non-comment line to
+# the end of the file and paste under your `jobs:` block. Do not
+# re-indent.
+#
+# No substitution placeholders — this fragment is copy-paste-ready.
+
+  ci-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Require ci-success green on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 45 minutes. Releases aren't time-sensitive; better to wait
+          # than to fail on a slow runner.
+          deadline=$(( SECONDS + 2700 ))
+          while :; do
+            # Server-side filter by check name. Without ?check_name=…,
+            # the endpoint returns ≤30 runs per page; on busy repos
+            # ci-success can fall off page 1 and the loop spins until
+            # timeout looking for a check that exists.
+            latest="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?check_name=ci-success" \
+              --jq '.check_runs | sort_by(.started_at) | last')"
+            status="$(echo "${latest}" | jq -r '.status // "missing"')"
+            conclusion="$(echo "${latest}" | jq -r '.conclusion // ""')"
+            echo "ci-success @ ${GITHUB_SHA}: status=${status} conclusion=${conclusion}"
+            if [ "${status}" = "completed" ]; then
+              [ "${conclusion}" = "success" ] && { echo "CI green — releasing."; exit 0; }
+              echo "::error::ci-success concluded '${conclusion}' for ${GITHUB_SHA} — not releasing."
+              exit 1
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::timed out waiting for ci-success on ${GITHUB_SHA} (status=${status}). Push the commit to main and let CI finish before tagging."
+              exit 1
+            fi
+            sleep 20
+          done

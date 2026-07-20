@@ -1,0 +1,27 @@
+{
+  "name": "deploy",
+  "version": "0.1.0",
+  "description": "Date-based deployment releases that trigger Docker image builds and site deployments.",
+  "author": {
+    "name": "charliek",
+    "email": "charlie.knudsen@gmail.com",
+    "url": "https://github.com/charliek"
+  },
+  "homepage": "https://github.com/charliek/codex-plugins/tree/main/plugins/deploy",
+  "repository": "https://github.com/charliek/codex-plugins",
+  "license": "MIT",
+  "keywords": ["deploy", "release", "docker", "github-actions"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Deploy",
+    "shortDescription": "Create date-based deployment releases",
+    "longDescription": "Verify release readiness, update the changelog, and push an annotated date-based tag that triggers Docker builds and site deployment.",
+    "developerName": "charliek",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/charliek/codex-plugins",
+    "defaultPrompt": [
+      "Create a date-based deployment release."
+    ]
+  }
+}

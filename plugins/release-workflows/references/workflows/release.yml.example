@@ -1,0 +1,127 @@
+# Example release.yml — a representative composition.
+#
+# Shows how the bundled job templates assemble into a complete
+# `release.yml` for a repo that ships:
+#   - A macOS DMG with Sparkle auto-update (appcast)
+#   - Linux .debs (amd64 + arm64) via apt-repo dispatch
+#
+# Repos with different artifact sets cherry-pick: drop the appcast job
+# if no Sparkle, drop apt-dispatch if no apt repo, replace mac+linux
+# with the build jobs you actually have.
+#
+# The placeholders below are the ones the setup skill replaces. For a
+# real release.yml, every angle-bracket placeholder should become a
+# concrete value.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+# Serialize re-runs against the same tag — better to wait than to abort
+# half-uploaded artifacts. Real-world racing of the same tag is rare;
+# this guard is for "I clicked re-run while the original was still going".
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ─── generic, from references/workflows/job-version-check.yml ───
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - name: Assert tag matches <MANIFEST_PATH>
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          tag_ver="${tag#v}"
+          base_ver="${tag_ver%%-*}"
+          manifest_ver="$(<VERSION_EXTRACT>)"
+          if [ "${base_ver}" != "${manifest_ver}" ]; then
+            echo "::error::tag ${tag} does not match <MANIFEST_PATH> version ${manifest_ver}."
+            exit 1
+          fi
+
+  # ─── generic, from references/workflows/job-ci-gate.yml ───
+  ci-gate:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, checks: read }
+    steps:
+      - name: Require ci-success green on the tagged commit
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          # … see references/workflows/job-ci-gate.yml for the full body …
+
+  # ─── generic, from references/workflows/job-create-release.yml ───
+  create-release:
+    needs: [version-check, ci-gate]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create (or reuse) the GitHub Release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          # … see references/workflows/job-create-release.yml for the full body …
+
+  # ─── repo-specific build jobs ───
+  # These stay inline because they're the part that's actually
+  # *yours*: the build chain for your binary. The plugin doesn't
+  # template these.
+
+  linux:
+    needs: create-release
+    permissions: { contents: write }
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     arch: amd64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      # … apt deps, build tools, build the .deb, upload to the Release …
+
+  mac:
+    needs: create-release
+    runs-on: macos-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v6
+      # … build .app, sign + (optionally) notarize, build DMG, upload to the Release …
+
+  # ─── generic, from references/workflows/job-finalize-release.yml ───
+  # Runs after every build/upload job; flips the release out of draft so the
+  # public releases/download/<tag>/<asset> URLs are reachable. Required
+  # whenever any publish job (homebrew, sparkle, …) reads assets from the
+  # public URL. Universal in practice — keep it unless you have no public-URL
+  # consumers at all.
+  finalize-release:
+    needs: [linux, mac]
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      # … see references/workflows/job-finalize-release.yml for the full body …
+
+  # ─── generic, from references/workflows/job-sparkle-appcast.yml ───
+  sparkle-appcast:
+    needs: finalize-release
+    runs-on: macos-latest
+    permissions: { contents: read }
+    steps:
+      # … see references/workflows/job-sparkle-appcast.yml for the full body …
+
+  # ─── generic, from references/workflows/job-apt-dispatch.yml ───
+  apt-dispatch:
+    needs: finalize-release
+    runs-on: ubuntu-latest
+    steps:
+      # … see references/workflows/job-apt-dispatch.yml for the full body …

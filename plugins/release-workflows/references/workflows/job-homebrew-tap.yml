@@ -1,0 +1,143 @@
+# homebrew-tap: render a Homebrew formula and push it to a tap repo.
+#
+# The GoReleaser-free equivalent of GoReleaser's `brews:` block, for repos that
+# build their binaries by hand (Rust, Zig, etc.). After the build job uploads the
+# per-arch `.tar.gz` assets to the GitHub Release, this job downloads them, hashes
+# them, renders a formula from an in-repo template, and commits it to the tap.
+#
+# The formula's sha256s depend on the built bytes, so this is a post-build CI step
+# — NOT something update-version.sh can do (see ../convention.md, "what goes in
+# update-version.sh and what doesn't").
+#
+# Credentials: this template uses the release-bot App, not a PAT. It mints a
+# short-lived token scoped to the tap repo via actions/create-github-app-token
+# (owner + repositories). The App must be installed on the tap repo; the tap's
+# default branch needs no ruleset if it's unprotected. See ../github-app.md,
+# "Cross-repo bot pushes". (Legacy alternative: a HOMEBREW_TAP_TOKEN fine-grained
+# PAT with Contents:write on the tap — swap the token step for
+# `GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}` and drop the app-token step.)
+#
+# === Paste-ready fragment ===
+# This file's YAML is already indented by 2 spaces so it sits cleanly under
+# `jobs:` in release.yml. Copy from the first non-comment line to the end of the
+# file and paste under your `jobs:` block. Do not re-indent.
+#
+# Substitution placeholders:
+#   <BUILD_JOB>            — the job id that uploaded the tarballs (e.g. `build`)
+#   <TAP_REPO>             — `<owner>/<repo>` of the tap (e.g. charliek/homebrew-tap)
+#   <FORMULA_NAME>         — the formula file/class basename (e.g. `mytool` →
+#                            Formula/mytool.rb, class Mytool)
+#   <FORMULA_TEMPLATE>     — path to the in-repo formula template with @VERSION@,
+#                            @TAG@, and per-arch @SHA_*@ placeholders
+#                            (e.g. scripts/release/mytool.rb.tmpl)
+#   <TARBALL_TRIPLES>      — space-separated os_arch tokens matching the uploaded
+#                            asset names <FORMULA_NAME>_<triple>.tar.gz
+#                            (e.g. "darwin_amd64 darwin_arm64 linux_amd64 linux_arm64")
+#
+# The template is rendered by sed: each `darwin_amd64` triple maps to a
+# @SHA_DARWIN_AMD64@ placeholder (uppercased), plus @VERSION@ and @TAG@.
+#
+# Assumes the source repo is PUBLIC (assets download over plain HTTPS). For a
+# private source repo, replace the curl with `gh release download` using a token
+# scoped to the source repo (the github.token of this workflow), kept separate
+# from the tap token.
+#
+# If RELEASE_BOT_CLIENT_ID isn't set, the job warns and skips rather than failing the
+# release.
+
+  homebrew:
+    needs: <BUILD_JOB>
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Skip if the release-bot App is not configured
+        id: guard
+        env:
+          CLIENT_ID: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+        run: |
+          if [ -z "${CLIENT_ID}" ]; then
+            echo "::warning::RELEASE_BOT_CLIENT_ID not set — skipping Homebrew formula update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a tap token
+        if: steps.guard.outputs.skip == 'false'
+        id: tap
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: <TAP_REPO_NAME>   # repo name only, e.g. homebrew-tap
+          # Defense-in-depth: pushing the formula needs contents:write;
+          # pinning the floor avoids silent widening if the App's install
+          # perms are ever expanded.
+          permission-contents: write
+
+      - name: Render and push the formula
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.tap.outputs.token }}
+          TAP_TOKEN: ${{ steps.tap.outputs.token }}
+          BOT_SLUG: ${{ steps.tap.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          ver="${tag#v}"
+
+          # Download the per-arch tarballs (public repo → plain HTTPS) and hash
+          # them into @SHA_<TRIPLE>@ sed expressions.
+          #
+          # Retry on 404: the public `releases/download/<tag>/...` URL has a
+          # short propagation lag after a release is published (we typically
+          # see 5-20s on first hit). The finalize-release job has flipped the
+          # release out of draft by this point, but the CDN may still serve
+          # 404 for a few seconds. Retry with backoff before giving up.
+          dl="$(mktemp -d)"
+          sed_args=( -e "s|@VERSION@|${ver}|g" -e "s|@TAG@|${tag}|g" )
+          for triple in <TARBALL_TRIPLES>; do
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/<FORMULA_NAME>_${triple}.tar.gz"
+            out="${dl}/<FORMULA_NAME>_${triple}.tar.gz"
+            for attempt in 1 2 3 4 5; do
+              if curl -fsSL -o "${out}" "${url}"; then break; fi
+              if [ "${attempt}" = 5 ]; then
+                echo "::error::Failed to download ${url} after 5 attempts (last status from curl above)."
+                exit 1
+              fi
+              echo "::warning::Download attempt ${attempt} failed for ${url}; retrying in 10s."
+              sleep 10
+            done
+            sha="$(shasum -a 256 "${out}" | awk '{print $1}')"
+            key="$(echo "${triple}" | tr '[:lower:]' '[:upper:]')"
+            sed_args+=( -e "s|@SHA_${key}@|${sha}|g" )
+          done
+
+          rendered="$(mktemp)"
+          sed "${sed_args[@]}" "<FORMULA_TEMPLATE>" > "${rendered}"
+
+          # Push to the tap.
+          work="$(mktemp -d)"
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/<TAP_REPO>.git" "${work}"
+          mkdir -p "${work}/Formula"
+          cp "${rendered}" "${work}/Formula/<FORMULA_NAME>.rb"
+
+          cd "${work}"
+          # Bot committer identity per the actions/create-github-app-token recipe:
+          # app-slug from the action output + the bot's numeric id from the public
+          # /users endpoint (installation tokens can't call /user).
+          bot_id="$(gh api "/users/${BOT_SLUG}[bot]" --jq '.id')"
+          git config user.name "${BOT_SLUG}[bot]"
+          git config user.email "${bot_id}+${BOT_SLUG}[bot]@users.noreply.github.com"
+          git add "Formula/<FORMULA_NAME>.rb"
+          if git diff --cached --quiet; then
+            echo "Formula/<FORMULA_NAME>.rb unchanged — nothing to push."
+          else
+            git commit -m "<FORMULA_NAME>: ${tag}"
+            git push origin HEAD:main
+            echo "::notice::Pushed Formula/<FORMULA_NAME>.rb ${tag} to <TAP_REPO>."
+          fi

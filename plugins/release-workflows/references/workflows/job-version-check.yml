@@ -1,0 +1,96 @@
+# version-check: assert the tag matches the repo's version manifest.
+#
+# Tag pushes (`vX.Y.Z`) carry a version embedded in the ref name. The
+# release skill's `scripts/release/update-version.sh` should have bumped
+# the manifest to match before tagging. This job is the cross-check —
+# it catches the case where the tag was created against the wrong
+# commit (e.g., a developer bypassed the skill).
+#
+# Job-shape vs inline-step shape
+# ───────────────────────────────
+# This template emits a SEPARATE JOB that runs as a prerequisite (the
+# `needs: [version-check, …]` pattern) so the rest of the pipeline can
+# fan out from a known-correct manifest. Use this shape when the build
+# is multi-job (e.g. matrix builds, Mac+Linux split, separate
+# appcast/dispatch jobs after build).
+#
+# If your release.yaml is a SINGLE JOB (e.g. one GoReleaser job that
+# does everything), inline the check as a step inside that job instead.
+# Prox's release.yaml does this; the inline form is:
+#
+#     - name: Verify <MANIFEST_PATH> matches tag
+#       run: |
+#         set -euo pipefail
+#         expect="${GITHUB_REF_NAME#v}"
+#         got="$(<VERSION_EXTRACT>)"
+#         [ "${got}" = "${expect}" ] || { echo "::error::<MANIFEST_PATH>=${got} != tag=${expect}"; exit 1; }
+#
+# Both shapes do the same work; the job-shape is slightly cleaner for
+# the multi-job case (fails fast before the matrix expands), the inline
+# shape is slightly cleaner for the single-job case (no needs: wiring).
+#
+# === Paste-ready fragment ===
+# This file's YAML is already indented by 2 spaces so it sits cleanly
+# under `jobs:` in release.yml. Copy from the first non-comment line to
+# the end of the file and paste under your `jobs:` block. Do not
+# re-indent.
+#
+# Substitution placeholders:
+#   <MANIFEST_PATH>     — the file holding the canonical version
+#                         (e.g. Cargo.toml, pyproject.toml, plugin.json,
+#                         build.gradle)
+#   <VERSION_EXTRACT>   — a shell snippet that reads MANIFEST_PATH and
+#                         prints just the version string to stdout. Examples
+#                         below.
+#
+#   For ANY JSON manifest (plugin.json, package.json, etc.), USE jq —
+#   never grep + sed. A grep + sed pattern that looks like
+#   `grep -oE '"version"…' | sed -E 's/.*"([^"]+)"$/\1/'` will silently
+#   misbehave the moment the manifest gains a nested `"version"` field
+#   (a future `dependencies` block, a `repositories.version` constraint,
+#   etc.) — grep returns multiple matches, sed transforms each, and the
+#   downstream comparison becomes a multi-line string that fails the
+#   equality check even when the top-level version is correct.
+#   jq anchors to the top-level field unambiguously and fails loudly on
+#   malformed JSON. jq is preinstalled on ubuntu-latest runners.
+#   This bit prox v0.1.2's first CodeRabbit review (W1/W2) and was hardened
+#   in codelens PR #47.
+#
+# Examples of <VERSION_EXTRACT>:
+#
+#   Cargo.toml (workspace):
+#     grep -E '^version[[:space:]]*=' Cargo.toml | head -1 \
+#       | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/'
+#
+#   pyproject.toml:
+#     grep -E '^version[[:space:]]*=' pyproject.toml | head -1 \
+#       | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/'
+#
+#   plugin.json (RECOMMENDED — use jq, NOT grep+sed):
+#     jq -r '.version' .claude-plugin/plugin.json
+#
+#   package.json (RECOMMENDED — use jq, NOT grep+sed):
+#     jq -r '.version' package.json
+#
+#   build.gradle:
+#     grep -E '^version[[:space:]]*=' build.gradle | head -1 \
+#       | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/'
+
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Assert tag matches <MANIFEST_PATH>
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          tag_ver="${tag#v}"
+          base_ver="${tag_ver%%-*}"   # strip any -rc1/-beta suffix
+          manifest_ver="$(<VERSION_EXTRACT>)"
+          echo "tag=${tag} (base ${base_ver})  manifest version=${manifest_ver}"
+          if [ "${base_ver}" != "${manifest_ver}" ]; then
+            echo "::error::tag ${tag} does not match <MANIFEST_PATH> version ${manifest_ver}. The release skill should bump the manifest before tagging — re-run \$release-workflows:release if this looks wrong."
+            exit 1
+          fi

@@ -1,0 +1,186 @@
+# sparkle-appcast: EdDSA-sign a just-built DMG, append a signed item to
+# the appcast XML, and bot-push the change to main.
+#
+# This is the "post-build asset update" pattern called out in
+# references/convention.md — the new appcast value (signature + length)
+# can't be computed from the version string alone, so the update has to
+# run after the DMG exists.
+#
+# Sits AFTER the job that built + uploaded the DMG. Lives in the same
+# release.yml as the rest. Requires the bot's permissions because it
+# pushes to main; the App's installation token is in the ruleset's
+# bypass list.
+#
+# === Paste-ready fragment ===
+# This file's YAML is already indented by 2 spaces so it sits cleanly
+# under `jobs:` in release.yml. Copy from the first non-comment line to
+# the end of the file and paste under your `jobs:` block. Do not
+# re-indent.
+#
+# Substitution placeholders:
+#   <DMG_PATTERN>            — the DMG filename glob the build job
+#                              uploaded, e.g. `Roost-*.dmg` or
+#                              `MyApp-*.dmg`
+#   <APPCAST_PATH>           — path to the appcast XML in the repo, e.g.
+#                              `docs/appcast.xml`
+#   <UPDATE_APPCAST_SCRIPT>  — path to the repo's appcast updater, e.g.
+#                              `mac/scripts/update-appcast.py`. The
+#                              script is repo-specific (different repos
+#                              embed different feed metadata); it must
+#                              accept VERSION + TAG + SIGN_FILE env vars
+#                              (names below) and mutate the appcast in
+#                              place
+#   <ENV_VERSION>            — env var name the update script reads for
+#                              the version (e.g. `ROOST_VERSION`). Use
+#                              whatever name the script reads.
+#   <ENV_TAG>                — env var name for the tag (e.g. `ROOST_TAG`)
+#   <ENV_SIGN_FILE>          — env var name for the sign_update output
+#                              file path (e.g. `ROOST_SIGN_FILE`)
+#   <SIGN_UPDATE_PATH>       — runner path to Sparkle's `sign_update`
+#                              binary. If the build job runs `swift
+#                              build` against a Sparkle SwiftPM
+#                              dependency, the binary appears at
+#                              `mac/.build/artifacts/sparkle/Sparkle/bin/sign_update`.
+#                              Other setups will differ.
+#
+# Bot committer identity: read at runtime from the action's `app-slug` output
+# (and `/users/<slug>[bot]` for the numeric id). The earlier version of this
+# template required <RELEASE_BOT_NAME> and <RELEASE_BOT_USER_ID> substitution
+# placeholders; both are removed because installation tokens can't call
+# `gh api /user` (403), and baking the values at emit time breaks if the App
+# is ever renamed or replaced. See ../github-app.md, "Cross-repo bot pushes".
+#
+# Assumes the build job (e.g. `mac:`) has already:
+#   1. Built the DMG to a known runner path
+#   2. Uploaded it to the GitHub Release with `gh release upload`
+#
+# This job is intentionally decoupled from the build job's runner
+# state — re-running just this job works without re-building because
+# it pulls the DMG back from the Release.
+#
+# Place this job as `needs: mac` (or whatever the build job is called).
+
+  sparkle-appcast:
+    needs: mac
+    runs-on: macos-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Mint release-bot App token
+        id: bot-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:      ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+          # Defense-in-depth: explicit permission floor on the minted
+          # token so a future widening of the App's installation perms
+          # doesn't silently broaden what this token can do. The
+          # appcast push (the only write the bot does) needs contents:write.
+          permission-contents: write
+
+      # The build job uploaded the DMG to the Release; pull it back down.
+      # This avoids coupling the appcast job to the build job's runner
+      # state — re-running just this job works without re-building.
+      - name: Download DMG from Release
+        env:
+          GH_TOKEN: ${{ steps.bot-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/release-dmg
+          gh release download "${GITHUB_REF_NAME}" --pattern '<DMG_PATTERN>' --dir /tmp/release-dmg
+          ls -la /tmp/release-dmg
+
+      - name: Sign DMG + append appcast entry
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SPARKLE_ED_PRIVATE_KEY}" ]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY secret is unset — can't sign the appcast entry."
+            exit 1
+          fi
+          VER="${GITHUB_REF_NAME#v}"
+          # Defer the no-match failure path until we can emit a friendly
+          # error. `|| true` keeps `set -e` from killing the assignment.
+          DMG="$(ls /tmp/release-dmg/<DMG_PATTERN> 2>/dev/null | head -1 || true)"
+          if [ -z "${DMG}" ] || [ ! -s "${DMG}" ]; then
+            echo "::error::no DMG matched <DMG_PATTERN> in /tmp/release-dmg"
+            ls -la /tmp/release-dmg 2>&1 || true
+            exit 1
+          fi
+          SIGN_UPDATE='<SIGN_UPDATE_PATH>'
+          if [ ! -x "${SIGN_UPDATE}" ]; then
+            echo "::error::sign_update not found at ${SIGN_UPDATE}"
+            exit 1
+          fi
+
+          W="$(mktemp -d)"
+          chmod 700 "$W"
+          trap 'rm -rf "$W"' EXIT
+          printf '%s' "${SPARKLE_ED_PRIVATE_KEY}" | base64 --decode > "${W}/key"
+          "${SIGN_UPDATE}" --ed-key-file "${W}/key" "${DMG}" > "${W}/sign.txt"
+          rm -f "${W}/key"
+          cat "${W}/sign.txt"
+
+          <ENV_VERSION>="${VER}" <ENV_TAG>="${GITHUB_REF_NAME}" <ENV_SIGN_FILE>="${W}/sign.txt" \
+            python3 <UPDATE_APPCAST_SCRIPT>
+          xmllint --noout <APPCAST_PATH>
+
+      - name: Push signed appcast to main as release-bot
+        env:
+          GH_TOKEN: ${{ steps.bot-token.outputs.token }}
+          BOT_SLUG: ${{ steps.bot-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet <APPCAST_PATH>; then
+            # Re-runs against an appcast that already carries this version
+            # diff to nothing because update-appcast.py preserves the
+            # prior pubDate. Push is a no-op.
+            echo "::notice::<APPCAST_PATH> unchanged for ${GITHUB_REF_NAME} — nothing to push."
+            exit 0
+          fi
+          # Bot committer identity per the actions/create-github-app-token recipe:
+          # app-slug from the action output + the bot's numeric id from the public
+          # /users endpoint (installation tokens can't call /user).
+          bot_id="$(gh api "/users/${BOT_SLUG}[bot]" --jq '.id')"
+          git config user.name  "${BOT_SLUG}[bot]"
+          git config user.email "${bot_id}+${BOT_SLUG}[bot]@users.noreply.github.com"
+          git add <APPCAST_PATH>
+          # Assert only the appcast is staged. The bot must never sweep
+          # other tracked files (e.g. a Cargo.lock that drifted during
+          # someone's build script) into this commit.
+          staged="$(git diff --cached --name-only)"
+          if [ "${staged}" != "<APPCAST_PATH>" ]; then
+            echo "::error::unexpected staged paths beyond <APPCAST_PATH>:"
+            echo "${staged}"
+            exit 1
+          fi
+          git commit -m "chore(appcast): publish ${GITHUB_REF_NAME}"
+
+          # URL-embedded token at push time. The http.extraheader pattern
+          # set via `git -c` is NOT honored for the outgoing HTTP request
+          # (we tried; git accepts the config but still prompts for
+          # credentials at request time — reproduced in roost v0.0.6).
+          # Embedding the token in the push URL works: stays in argv,
+          # never written to .git/config on disk, single-tenant runner so
+          # other processes don't see it.
+          TOKEN_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          push() { git push "${TOKEN_URL}" HEAD:main; }
+          for attempt in 1 2 3; do
+            if push; then
+              echo "::notice::Appcast pushed for ${GITHUB_REF_NAME}."
+              exit 0
+            fi
+            echo "::warning::push attempt ${attempt} failed; rebasing onto origin/main and retrying"
+            git fetch "${TOKEN_URL}" main
+            git rebase FETCH_HEAD || {
+              echo "::error::rebase conflict on <APPCAST_PATH> — concurrent appcast write? Re-run after investigating."
+              exit 1
+            }
+          done
+          echo "::error::push failed after 3 attempts; main moved faster than the retry loop. Re-run the workflow."
+          exit 1

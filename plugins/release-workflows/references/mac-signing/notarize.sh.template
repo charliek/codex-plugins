@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Notarize + staple a <APP> DMG. (notarytool needs an archive — a bare .app
+# must be zipped first; the release pipeline always passes the DMG.)
+#
+# Canonical copy lives in codex-plugins release-workflows
+# (references/mac-signing/notarize.sh.template). Drop it into the repo as
+# scripts/notarize.sh (or mac/scripts/notarize.sh) and replace the placeholders.
+# <APP> must be an UPPERCASE, env-var-safe prefix (e.g. ROOST, SHED_DESKTOP) —
+# it appears in shell variable names like <APP>_NOTARY_PROFILE. <APP_BUNDLE> is
+# the .app basename (e.g. Roost).
+#
+# No-op (exit 0) when no credentials are configured, so the release pipeline
+# still ships an ad-hoc / un-notarized DMG until the Apple secrets land. Adding
+# them activates it with no other changes.
+#
+# Credentials (either form):
+#   * <APP>_NOTARY_PROFILE — a stored notarytool keychain profile
+#       (local: `xcrun notarytool store-credentials <name> --apple-id … --team-id … --password …`)
+#   * APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD — CI secrets
+#
+# Usage:
+#   ./scripts/notarize.sh build/<APP>-1.2.3.dmg
+set -euo pipefail
+
+TARGET="${1:-}"
+if [ -z "${TARGET}" ] || [ ! -e "${TARGET}" ]; then
+  echo "usage: $0 <path-to-dmg-or-archive>" >&2
+  exit 1
+fi
+
+if [ -n "${<APP>_NOTARY_PROFILE:-}" ]; then
+  AUTH=(--keychain-profile "${<APP>_NOTARY_PROFILE}")
+elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
+  AUTH=(--apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" --password "${APPLE_APP_SPECIFIC_PASSWORD}")
+else
+  echo "==> notarize: no credentials set — skipping (DMG ships un-notarized)."
+  echo "    To enable: set <APP>_NOTARY_PROFILE, or APPLE_ID + APPLE_TEAM_ID +"
+  echo "    APPLE_APP_SPECIFIC_PASSWORD, then re-run."
+  echo "    Until then, users clear Gatekeeper once after install with:"
+  echo "      xattr -dr com.apple.quarantine /Applications/<APP_BUNDLE>.app"
+  echo "    (or System Settings > Privacy & Security > Open Anyway)."
+  exit 0
+fi
+
+echo "==> notarytool submit (waits for Apple; usually a few minutes)…"
+xcrun notarytool submit "${TARGET}" "${AUTH[@]}" --wait
+
+echo "==> stapler staple"
+xcrun stapler staple "${TARGET}"
+xcrun stapler validate "${TARGET}"
+echo "==> Notarized + stapled: ${TARGET}"

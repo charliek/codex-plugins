@@ -1,0 +1,28 @@
+{
+  "name": "release-workflows",
+  "version": "0.1.0",
+  "description": "Convention-based semantic-version release and repository bootstrap workflows.",
+  "author": {
+    "name": "charliek",
+    "email": "charlie.knudsen@gmail.com",
+    "url": "https://github.com/charliek"
+  },
+  "homepage": "https://github.com/charliek/codex-plugins/tree/main/plugins/release-workflows",
+  "repository": "https://github.com/charliek/codex-plugins",
+  "license": "MIT",
+  "keywords": ["release", "semver", "github-actions", "automation"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Release Workflows",
+    "shortDescription": "Set up and cut convention-based releases",
+    "longDescription": "Bootstrap repositories onto a release convention and cut safe semantic-version releases with mechanical manifest bumps and CI-owned publishing.",
+    "developerName": "charliek",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/charliek/codex-plugins",
+    "defaultPrompt": [
+      "Cut the requested semantic-version release.",
+      "Set up this repository for release-workflows."
+    ]
+  }
+}

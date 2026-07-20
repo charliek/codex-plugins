@@ -1,0 +1,6 @@
+interface:
+  display_name: "Release Workflow Setup"
+  short_description: "Bootstrap a repository release workflow safely"
+  default_prompt: "Use $setup to bootstrap this repository onto release-workflows."
+policy:
+  allow_implicit_invocation: false

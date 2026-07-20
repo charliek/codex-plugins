@@ -1,0 +1,112 @@
+name: sanity-check-app
+
+# Manually-triggered verification that the release-bot App is installed on
+# every repo this release.yml touches — the running repo itself, plus every
+# cross-repo push/dispatch target (Homebrew tap, apt-repo receiver, Docker
+# registry repo, etc.).
+#
+# Drop this into `.github/workflows/sanity-check-app.yml`. Run from the Actions
+# UI → "Run workflow" after setting the RELEASE_BOT_APP_* secrets and
+# installing the App on every target repo. Useful:
+#   * first wiring the App into a new repo (before touching release.yml)
+#   * after rotating the App's private key (re-verify after updating
+#     the RELEASE_BOT_APP_KEY secret)
+#   * after migrating to a new App
+#   * after adopting a new cross-repo target (add a block for it; re-run)
+#
+# Each block mints a short-lived installation token scoped to one repo and
+# calls a read-only endpoint. A failure to mint, or a 404 on the reach check,
+# means the App isn't installed on that repo — fix the install before the
+# real release runs.
+#
+# The bot identity comes from the action's `app-slug` output, NOT
+# `gh api /user`, which returns 403 for installation tokens (they don't
+# authenticate as a user).
+#
+# Prints repository names only for explicit cross-repo targets the maintainer
+# already knows about. The first block prints `installation_repositories`
+# COUNT (not names) — the App may eventually install on private repos and
+# listing names in a potentially-public workflow log would leak them.
+#
+# === Composition ===
+# Keep block 1 (self) verbatim. Add one "── N. <target> ──" block per
+# cross-repo target the setup skill or maintainer chose:
+#   - Homebrew tap → owner+repositories scoped to the tap repo
+#   - apt receiver → owner+repositories scoped to the receiver
+#   - Docker config repo → same pattern
+# The setup skill drops in one block per Phase-2 YES that involves another repo.
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}   # this workflow needs nothing from the workflow token
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      # ── 1. self ──
+      - id: self-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id:      ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+
+      - name: Token sees this repo + bot identity
+        env:
+          GH_TOKEN: ${{ steps.self-token.outputs.token }}
+          BOT_SLUG: ${{ steps.self-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          echo "::group::This repo (must print ${{ github.repository }})"
+          gh api "/repos/${GITHUB_REPOSITORY}" --jq '.full_name'
+          echo "::endgroup::"
+
+          echo "::group::Installation repository count (informational)"
+          # IMPORTANT — this is the count of repos in THIS repo's
+          # installation, not the App's total install footprint. The
+          # typical pattern is per-repo selective installs: each repo
+          # has its own installation that sees only itself (count=1),
+          # so cross-repo minting reaches OTHER installations through
+          # the App's private key via owner+repositories inputs (see
+          # github-app.md "Per-repo selective installs vs single-
+          # installation"). Don't assert count>=N here — it's mostly
+          # informational. The cross-repo blocks below are the real
+          # verification that the App can reach each target.
+          gh api /installation/repositories --jq '.total_count'
+          echo "::endgroup::"
+
+          # Installation tokens can't call /user (403 "Resource not accessible by
+          # integration") — they don't authenticate as a user. The bot identity
+          # comes from the action's app-slug output instead.
+          echo "::group::Bot identity (should end with [bot])"
+          echo "${BOT_SLUG}[bot]"
+          echo "::endgroup::"
+
+      # ── 2. <CROSS_REPO_TARGET_NAME> (e.g. homebrew-tap, apt receiver) ──
+      # Duplicate this pair of steps once per cross-repo target. The placeholder
+      # values get substituted by the setup skill at emit time. Uncomment and
+      # fill in for each target; delete this commented block if there are no
+      # cross-repo targets.
+      #
+      # - id: <TARGET_TOKEN_ID>             # e.g. tap-token, apt-token
+      #   uses: actions/create-github-app-token@v3
+      #   with:
+      #     client-id:      ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+      #     private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+      #     owner:        <TARGET_OWNER>           # the repo's owner
+      #     repositories: <TARGET_REPO_NAME>       # repo name only, e.g. homebrew-tap
+      #     # Defense-in-depth: pin the permission floor on cross-repo blocks
+      #     # so they match what the real release.yaml's mint steps request.
+      #     # (Do NOT add this to the self block above — its broader scope
+      #     # is needed for /installation/repositories.)
+      #     permission-contents: write
+      #
+      # - name: Token can reach <TARGET_OWNER>/<TARGET_REPO_NAME>
+      #   env:
+      #     GH_TOKEN: ${{ steps.<TARGET_TOKEN_ID>.outputs.token }}
+      #   run: |
+      #     set -euo pipefail
+      #     echo "::group::<TARGET_OWNER>/<TARGET_REPO_NAME> (must print the same)"
+      #     gh api "/repos/<TARGET_OWNER>/<TARGET_REPO_NAME>" --jq '.full_name'
+      #     echo "::endgroup::"

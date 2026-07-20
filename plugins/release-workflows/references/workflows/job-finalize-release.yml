@@ -1,0 +1,45 @@
+# finalize-release: publish the Release if it's still a draft, and mark it as
+# `latest` so downstream tooling sees it.
+#
+# Why this exists: `gh release create` occasionally stores a release as a
+# tag-less draft when the just-pushed tag isn't yet visible to the Release API
+# at the moment the create job runs (the URL slug shows as
+# `untagged-<hash>` instead of the tag). Asset uploads in that state attach
+# to the draft and are not served by the public `releases/download/<tag>/...`
+# URL. Any post-build job that curls those URLs (homebrew tap, etc.) then
+# 404s — even though `gh release view <tag>` shows the assets present.
+#
+# This job runs AFTER every build/upload job and explicitly flips the release
+# out of draft. The flip rewrites asset URLs to use the tag slug. Idempotent:
+# `--draft=false --latest` on an already-published latest release is a no-op.
+#
+# Place this job between the build jobs and any publish jobs that read assets
+# from the Release. Make those publish jobs `needs: finalize-release` (not
+# `needs: build`).
+#
+# === Paste-ready fragment ===
+# This file's YAML is already indented by 2 spaces so it sits cleanly under
+# `jobs:` in release.yml. Copy from the first non-comment line to the end of
+# the file and paste under your `jobs:` block. Do not re-indent.
+#
+# Substitution placeholders:
+#   <BUILD_JOBS>  — space-separated build job ids whose assets must exist
+#                   before the release flips out of draft (e.g. `build` for a
+#                   single matrix, or `linux mac` for split jobs).
+
+  finalize-release:
+    needs: [<BUILD_JOBS>]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the Release (flip draft → latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # --latest sets the release as the repo's "latest"; harmless if it
+          # already was. --draft=false flips a draft to published.
+          gh release edit "${tag}" --draft=false --latest
+          echo "::notice::Release ${tag} published (not draft, marked latest)."

@@ -1,0 +1,55 @@
+# create-release: extract this tag's CHANGELOG section and create the
+# GitHub Release with it as the body.
+#
+# The release skill committed a CHANGELOG entry under a `## vX.Y.Z`
+# heading. This job pulls that section out and uses it as the release
+# notes. Falls back to `--generate-notes` if no section is found (so a
+# missing CHANGELOG doesn't block the publish).
+#
+# Prereleases (`-rc`, `-beta`, etc.) are detected from the tag name and
+# get `--prerelease`. Reuses the existing release if this job is re-run.
+#
+# Assumes CHANGELOG.md follows Keep-a-Changelog (each release headed by
+# `## vX.Y.Z` or `## vX.Y.Z — YYYY-MM-DD`).
+#
+# === Paste-ready fragment ===
+# This file's YAML is already indented by 2 spaces so it sits cleanly
+# under `jobs:` in release.yml. Copy from the first non-comment line to
+# the end of the file and paste under your `jobs:` block. Do not
+# re-indent.
+#
+# No substitution placeholders.
+
+  create-release:
+    needs: [version-check, ci-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Create (or reuse) the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          pre=""
+          case "${tag}" in *-*) pre="--prerelease";; esac
+          # Pull this tag's section out of CHANGELOG.md (## <tag> … up to the
+          # next ## v…). Field match so a trailing "— <date>" doesn't break it.
+          notes="$(awk -v tag="${tag}" '
+            $1=="##" && $2==tag {flag=1; next}
+            /^## v/ {if(flag) exit}
+            flag {print}
+          ' CHANGELOG.md || true)"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists — reusing."
+            exit 0
+          fi
+          if [ -n "${notes}" ]; then
+            printf '%s\n' "${notes}" | gh release create "${tag}" --title "${tag}" --notes-file - ${pre}
+          else
+            gh release create "${tag}" --title "${tag}" --generate-notes ${pre}
+          fi

@@ -246,15 +246,18 @@ class RepositoryContractTests(unittest.TestCase):
     def test_marketplace_and_plugin_contract(self) -> None:
         marketplace = json.loads((ROOT / ".agents/plugins/marketplace.json").read_text())
         self.assertEqual(marketplace["name"], "codex-plugins")
-        self.assertEqual([entry["name"] for entry in marketplace["plugins"]], ["planning", "cursor", "git-commands"])
+        self.assertEqual(
+            [entry["name"] for entry in marketplace["plugins"]],
+            ["planning", "cursor", "git-commands", "deploy", "release-workflows"],
+        )
         for entry in marketplace["plugins"]:
             manifest = json.loads((ROOT / entry["source"]["path"] / ".codex-plugin/plugin.json").read_text())
             self.assertEqual(manifest["name"], entry["name"])
             self.assertEqual(manifest["version"], "0.1.0")
 
-    def test_ten_skills_have_matching_frontmatter(self) -> None:
+    def test_thirteen_skills_have_matching_frontmatter(self) -> None:
         skills = sorted(ROOT.glob("plugins/*/skills/*/SKILL.md"))
-        self.assertEqual(len(skills), 10)
+        self.assertEqual(len(skills), 13)
         for skill in skills:
             text = skill.read_text(encoding="utf-8")
             self.assertTrue(text.startswith("---\n"), skill)
@@ -262,11 +265,62 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertEqual(name_line.removeprefix("name: "), skill.parent.name)
 
     def test_no_claude_command_artifacts(self) -> None:
-        banned = ("$ARGUMENTS", "AskUserQuestion", "subagent_type:", ".claude-plugin")
+        banned = ("$ARGUMENTS", "AskUserQuestion", "subagent_type:")
         for path in ROOT.glob("plugins/*/skills/*/SKILL.md"):
             text = path.read_text(encoding="utf-8")
             for token in banned:
                 self.assertNotIn(token, text, f"{token} in {path}")
+
+    def test_new_release_skills_use_codex_command_mechanics(self) -> None:
+        roots = (ROOT / "plugins/deploy", ROOT / "plugins/release-workflows")
+        banned = (
+            "$ARGUMENTS",
+            "argument-hint",
+            "/deploy:",
+            "/release-workflows:",
+            "noreply@anthropic.com",
+            "CLAUDE.md",
+            "cc-plugins",
+        )
+        for root in roots:
+            for path in root.rglob("*"):
+                if path.is_file():
+                    text = path.read_text(encoding="utf-8")
+                    for token in banned:
+                        self.assertNotIn(token, text, f"{token} in {path}")
+
+    def test_release_workflows_preserves_claude_target_support(self) -> None:
+        root = ROOT / "plugins/release-workflows"
+        setup = (root / "skills/setup/SKILL.md").read_text(encoding="utf-8")
+        convention = (root / "references/convention.md").read_text(encoding="utf-8")
+        update_versions = (root / "references/update-version/README.md").read_text(encoding="utf-8")
+        for text in (setup, convention, update_versions):
+            self.assertIn(".claude-plugin/plugin.json", text)
+        self.assertIn(".codex-plugin/plugin.json", setup)
+        self.assertIn("intentionally deferred", setup)
+
+    def test_new_plugins_are_codex_packaged_and_explicit_only(self) -> None:
+        for plugin in ("deploy", "release-workflows"):
+            root = ROOT / "plugins" / plugin
+            self.assertTrue((root / ".codex-plugin/plugin.json").is_file())
+            self.assertFalse((root / ".claude-plugin").exists())
+            for metadata in root.glob("skills/*/agents/openai.yaml"):
+                self.assertIn(
+                    "allow_implicit_invocation: false",
+                    metadata.read_text(encoding="utf-8"),
+                )
+
+    def test_new_plugin_markdown_links_resolve(self) -> None:
+        import re
+
+        for root in (ROOT / "plugins/deploy", ROOT / "plugins/release-workflows"):
+            for path in root.rglob("*.md"):
+                text = path.read_text(encoding="utf-8")
+                for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
+                    if target.startswith(("https://", "http://", "#")):
+                        continue
+                    resolved = (path.parent / target.split("#", 1)[0]).resolve()
+                    self.assertTrue(resolved.exists(), f"broken link {target} in {path}")
 
 
 if __name__ == "__main__":
